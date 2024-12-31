@@ -5,12 +5,16 @@ from mem0.memory.utils import format_entities
 try:
     from langchain_community.graphs import Neo4jGraph
 except ImportError:
-    raise ImportError("langchain_community is not installed. Please install it using pip install langchain-community")
+    raise ImportError(
+        "langchain_community is not installed. Please install it using pip install langchain-community"
+    )
 
 try:
     from rank_bm25 import BM25Okapi
 except ImportError:
-    raise ImportError("rank_bm25 is not installed. Please install it using pip install rank-bm25")
+    raise ImportError(
+        "rank_bm25 is not installed. Please install it using pip install rank-bm25"
+    )
 
 from mem0.graphs.tools import (
     ADD_MEMORY_STRUCT_TOOL_GRAPH,
@@ -38,7 +42,9 @@ class MemoryGraph:
             self.config.graph_store.config.username,
             self.config.graph_store.config.password,
         )
-        self.embedding_model = EmbedderFactory.create(self.config.embedder.provider, self.config.embedder.config)
+        self.embedding_model = EmbedderFactory.create(
+            self.config.embedder.provider, self.config.embedder.config
+        )
 
         self.llm_provider = "openai_structured"
         if self.config.llm.provider:
@@ -64,10 +70,12 @@ class MemoryGraph:
 
         # extract relations
         extracted_relations = self._extract_relations(data, filters, entity_type_map)
-        
+
         search_output_string = format_entities(search_output)
         extracted_relations_string = format_entities(extracted_relations)
-        update_memory_prompt = get_update_memory_messages(search_output_string, extracted_relations_string)
+        update_memory_prompt = get_update_memory_messages(
+            search_output_string, extracted_relations_string
+        )
 
         _tools = [UPDATE_MEMORY_TOOL_GRAPH, ADD_MEMORY_TOOL_GRAPH, NOOP_TOOL]
         if self.llm_provider in ["azure_openai_structured", "openai_structured"]:
@@ -99,14 +107,27 @@ class MemoryGraph:
 
         returned_entities = []
 
-        for item in to_be_added:
-            source = item["source"].lower().replace(" ", "_")
-            source_type = item["source_type"].lower().replace(" ", "_")
-            relation = item["relationship"].lower().replace(" ", "_")
-            destination = item["destination"].lower().replace(" ", "_")
-            destination_type = item["destination_type"].lower().replace(" ", "_")
+        def clean_type(type_str):
+            return type_str.lower().replace(" ", "_")
 
-            returned_entities.append({"source": source, "relationship": relation, "target": destination})
+        def get_node_type(node_name, default_type):
+            if node_name.startswith("usrx"):
+                return "user"
+            if node_name.startswith("assx"):
+                return "assistant"
+            return clean_type(default_type)
+
+        for item in to_be_added:
+            source = item["source"]
+            destination = item["destination"]
+
+            source_type = get_node_type(source, item["source_type"])
+            destination_type = get_node_type(destination, item["destination_type"])
+            relation = clean_type(item["relationship"])
+
+            returned_entities.append(
+                {"source": source, "relationship": relation, "target": destination}
+            )
 
             # Create embeddings
             source_embedding = self.embedding_model.embed(source)
@@ -135,7 +156,7 @@ class MemoryGraph:
 
             _ = self.graph.query(cypher, params=params)
 
-        logger.info(f"Added {len(to_be_added)} new memories to the graph")
+        logger.debug(f"Added {len(to_be_added)} new memories to the graph")
 
         return returned_entities
 
@@ -154,7 +175,12 @@ class MemoryGraph:
             tools=_tools,
         )
 
-        entity_type_map = {}
+        user_id = filters["user_id"]
+        assistant_id = filters["agent_id"]
+        entity_type_map = {
+            user_id: "user",
+            assistant_id: "assistant",
+        }
 
         try:
             for item in search_results["tool_calls"][0]["arguments"]["entities"]:
@@ -223,7 +249,10 @@ class MemoryGraph:
         if not search_output:
             return []
 
-        search_outputs_sequence = [[item["source"], item["relation"], item["destination"]] for item in search_output]
+        search_outputs_sequence = [
+            [item["source"], item["relation"], item["destination"]]
+            for item in search_output
+        ]
         bm25 = BM25Okapi(search_outputs_sequence)
 
         tokenized_query = query.split(" ")
@@ -231,9 +260,11 @@ class MemoryGraph:
 
         search_results = []
         for item in reranked_results:
-            search_results.append({"source": item[0], "relationship": item[1], "target": item[2]})
+            search_results.append(
+                {"source": item[0], "relationship": item[1], "target": item[2]}
+            )
 
-        logger.info(f"Returned {len(search_results)} search results")
+        logger.debug(f"Returned {len(search_results)} search results")
 
         return search_results
 
@@ -264,7 +295,9 @@ class MemoryGraph:
         RETURN n.name AS source, type(r) AS relationship, m.name AS target
         LIMIT $limit
         """
-        results = self.graph.query(query, params={"user_id": filters["user_id"], "limit": limit})
+        results = self.graph.query(
+            query, params={"user_id": filters["user_id"], "limit": limit}
+        )
 
         final_results = []
         for result in results:
@@ -276,7 +309,7 @@ class MemoryGraph:
                 }
             )
 
-        logger.info(f"Retrieved {len(final_results)} relationships")
+        logger.debug(f"Retrieved {len(final_results)} relationships")
 
         return final_results
 
@@ -286,20 +319,39 @@ class MemoryGraph:
             messages = [
                 {
                     "role": "system",
-                    "content": EXTRACT_RELATIONS_PROMPT.replace("USER_ID", filters["user_id"]).replace(
-                        "CUSTOM_PROMPT", f"4. {self.config.graph_store.custom_prompt}"
+                    "content": self.config.graph_store.custom_prompt.replace(
+                        "USER_ID", filters["user_id"]
                     ),
+                    # "content": EXTRACT_RELATIONS_PROMPT.replace("USER_ID", filters["user_id"]).replace(
+                    #     "CUSTOM_PROMPT", f"4. {self.config.graph_store.custom_prompt}"
+                    # ),
                 },
-                {"role": "user", "content": data},
+                {
+                    "role": "user",
+                    "content": f"List of entities: {list(entity_type_map.keys())}. \n\nText: {data}",
+                },
+                # {"role": "user", "content": data},
             ]
         else:
             messages = [
                 {
                     "role": "system",
-                    "content": EXTRACT_RELATIONS_PROMPT.replace("USER_ID", filters["user_id"]),
+                    "content": EXTRACT_RELATIONS_PROMPT.replace(
+                        "USER_ID", filters["user_id"]
+                    ),
                 },
-                {"role": "user", "content": f"List of entities: {list(entity_type_map.keys())}. \n\nText: {data}"},
+                {
+                    "role": "user",
+                    "content": f"List of entities: {list(entity_type_map.keys())}. \n\nText: {data}",
+                },
             ]
+        logger.info(
+            "Extracting relations from data: %s with entity type map: %s, filters: %s, messages: %s",
+            data,
+            entity_type_map,
+            filters,
+            messages,
+        )
 
         _tools = [RELATIONS_TOOL]
         if self.llm_provider in ["azure_openai_structured", "openai_structured"]:
@@ -309,14 +361,17 @@ class MemoryGraph:
             messages=messages,
             tools=_tools,
         )
+        logger.info("Extracting relations, LLM response: %s", extracted_entities)
 
         if extracted_entities["tool_calls"]:
-            extracted_entities = extracted_entities["tool_calls"][0]["arguments"]["entities"]
+            extracted_entities = extracted_entities["tool_calls"][0]["arguments"][
+                "entities"
+            ]
         else:
             extracted_entities = []
 
         logger.debug(f"Extracted entities: {extracted_entities}")
-        
+
         return extracted_entities
 
     def _update_relationship(self, source, target, relationship, filters):
@@ -332,7 +387,7 @@ class MemoryGraph:
         Raises:
             Exception: If the operation fails.
         """
-        logger.info(f"Updating relationship: {source} -{relationship}-> {target}")
+        logger.debug(f"Updating relationship: {source} -{relationship}-> {target}")
 
         relationship = relationship.lower().replace(" ", "_")
 
@@ -368,4 +423,6 @@ class MemoryGraph:
         )
 
         if not result:
-            raise Exception(f"Failed to update or create relationship between {source} and {target}")
+            raise Exception(
+                f"Failed to update or create relationship between {source} and {target}"
+            )
